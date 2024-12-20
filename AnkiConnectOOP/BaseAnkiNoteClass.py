@@ -2,15 +2,18 @@ import copy
 import base64
 from pathlib import Path
 import shutil
+import json
 
 
 class BaseAnkiNote:
     anki_media_folder = Path("C:\\Users\\user\\AppData\\Roaming\\Anki2\\User 1\\collection.media") #anki media folder for audio creation
+    AUDIO_BASE_PATH = Path(f"C:\\Users\\user\\Desktop\\LocalAudioJP\\local-yomichan-audio-collection-2023-06-11-mp3\\user_files")
+    AUDIO_SOURCES = ("jpod_files", "nhk16_files", "forvo_files") #sources for finding audio. upd. made it tuple instead of a list for immutability
 
-    def __init__(self, sentence, translation):
+    def __init__(self, new_words, sentence):
         self.fields = { #basic required fields for anki card creation
-            "Sentence": sentence,  
-            "Translation": translation
+            "New words": new_words,
+            "Sentence": sentence        
         } 
         
     #PAYLOAD MANAGEMENT SECTION
@@ -22,14 +25,14 @@ class BaseAnkiNote:
 
     #TODO: Modify this function/make a new one to support other api actions other than addNote
     #main function for basic card creation: creates a note with word, translation and audio for word if it exists
-    def createPayload(self, base_card_template, extra_fields = None):  #extra fields for things like pitch accent and furigana
+    def createPayload(self, base_card_template, translation = None):  #extra fields for things like pitch accent and furigana
         card_payload = BaseAnkiNote.copyBaseCardTemplate(base_card_template)
         fields_to_update = self.fields.copy() #copy fields of instance to avoid modifying the original
 
-        if extra_fields: #if extra_fields dict is not None
-            fields_to_update.update(extra_fields)
+        if translation: #if translation is passed to createPayload 
+            fields_to_update["Translation"] = translation #add it to card
 
-        audio_file_name = self.copyAudioToFolder() #copy target word to anki media folder
+        audio_file_name = self.copyAudioToFolderMaster() #copy target word to anki media folder
 
         if audio_file_name: #if audio file for a word exists
             fields_to_update["Audio"] = f"[sound:{audio_file_name}]" #update audio with filename.mp3
@@ -62,35 +65,76 @@ class BaseAnkiNote:
                 "data": base64_screenshot_data,         # Base64 encoded image data
                 "fields": ["Screenshot"]            # The fields where this image should appear
             }]}
+
     #AUDIO SECTION
-    #Find audio file in local audio collection folder
-    def findAudioFile(self):
-        target_word = self.fields["Sentence"] #store target_word as a separate attribute to use later
+    def findAudioNameMaster(self): #find and return filename of an audio file and a source where it was found
+        sources = BaseAnkiNote.AUDIO_SOURCES 
 
-        #for now baseFolder is constant
-        baseFolder = Path("C:\\Users\\user\\Desktop\\LocalAudioJP\\local-yomichan-audio-collection-2023-06-11-mp3\\user_files\\forvo_files")
-
-        audioFileList = (file_path for file_path in baseFolder.rglob(f"{target_word}.mp3") if file_path.is_file() and file_path.suffix.lower() in ['.mp3']) #set for faster lookup and O(1) complexity
-
-        for file_path in audioFileList:
-            if file_path.name:
-                print(f"Found {target_word} in {file_path}")
-                return file_path #file path to be used in copyAudioToFolder
+        for source in sources: #check for every source
+            filename = self.process_audio_files(source)
             
-        print(f"{target_word} not found, returning None...")
-        return None
+            if filename:
+                print(f"Returning {filename} found in {source}")
+                return filename, source
 
-    #copy to other folder (e.g. anki media folder)
-    def copyAudioToFolder(self):
-        audio_file_path = self.findAudioFile() #changed from findAudioFile(target_word)
-        if audio_file_path:
-            full_target_path = BaseAnkiNote.anki_media_folder / audio_file_path.name #construct full path to target folder
-            if full_target_path.exists():
-                print(f"File {audio_file_path.name} already exists in {BaseAnkiNote.anki_media_folder}")
-                return audio_file_path.name
+        return None, None
+    
+    def copyAudioToFolderMaster(self): #copy audio file from local audio files to anki media folder
+
+        filename, source = self.findAudioNameMaster() 
+
+        if filename is None or source is None: #check for None after execution findAudioNameMaster
+            print("Filename or source is  None. Cannot construct a path")
+            return None
+
+        origin_media_folder = filename if source == "forvo_files" else self.AUDIO_BASE_PATH / source / "audio" / filename  #construct path to copy from      
+        target_filename =  filename.name if source == "forvo_files" else filename #manage filename for every source
+        full_target_path = BaseAnkiNote.anki_media_folder / target_filename #constuct full path to copy file to
+
+        if full_target_path.exists():
+            print(f"File {target_filename} already exists in {full_target_path}")
+            return target_filename
+        
+        shutil.copy(origin_media_folder , full_target_path)
+        print(f"Copied file {target_filename} to {full_target_path}")
+        return target_filename #return file name to add to card
+              
+    #FUNCTIONS FOR FINDING AUDIO FILENAMES IN SPECIFIC SOURCE
+    def process_audio_files(self, source): #process audio sources, find and return audio file name
+        target_word = self.fields["New words"]
+        json_path = self.AUDIO_BASE_PATH / source / "index.json"
+        forvo_folder = self.AUDIO_BASE_PATH / source
+
+        if source == "jpod_files": #parse jpod_files json
+            with open(json_path, 'r', encoding='utf-8') as json_file:
+                data = json.load(json_file)
+
+            if target_word in data["headwords"]:
+                print(f"Found filename for {target_word} in {source}...Returning filename...")
+                return data["headwords"][target_word][0]
             else:
-                shutil.copy(audio_file_path , full_target_path)
-                print(f"Copied file {audio_file_path.name} to {BaseAnkiNote.anki_media_folder}")
-                return audio_file_path.name #return file name to add to card
-        else:
-            print(f"Failed to copy file. {self.fields["Sentence"]} was not found in audio folder")
+                print(f"Filename for {target_word} was not found in {source}. Switching to a different audio source...")
+                return None
+
+        elif source == "nhk16_files": #parse nhk16_files json
+            with open(json_path, 'r', encoding='utf-8') as json_file:
+                data = json.load(json_file)
+
+            for entry in data:
+                if target_word in entry["kanji"]:
+                    print(f"Found filename for {target_word} in {source}...Returning filename...")
+                    return entry["accents"][0]["soundFile"]
+
+            print(f"Filename for {target_word} was not found in {source}. Switching to a different audio source...")
+
+        elif source == "forvo_files": #find file name in forvo_files
+            audioFileList = (file_path for file_path in forvo_folder.rglob(f"{target_word}.mp3") if file_path.is_file() and file_path.suffix.lower() in ['.mp3']) #set for faster lookup and O(1) complexity
+
+            for file_path in audioFileList:
+                if file_path.name:
+                    print(f"Found {target_word} in {source} at {file_path}")
+                    return file_path #file path to be used in copyAudioToFolderMaster
+                    
+            print(f"{target_word} not found in any of audio sources, returning None...")
+
+
