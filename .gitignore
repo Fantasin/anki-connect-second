@@ -1,0 +1,14 @@
+.env
+.venv/
+
+anki_connect_refactor/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+static/Audio/*
+static/Screenshots/*
+
+static/AnkiJP - P5.csv
+static/P5_ed.csv 
+static/test.csv
